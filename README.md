@@ -1,6 +1,6 @@
-## RFM69HCW Radiolib for ESP32-S3
+## Radiolib RFM69HCW for ESP32-S3
 
-This code modifies the example [Transmit](https://registry.platformio.org/libraries/jgromes/RadioLib/examples/RF69/RF69_Transmit_Interrupt/RF69_Transmit_Interrupt.ino) and [Receive]((https://registry.platformio.org/libraries/jgromes/RadioLib/examples/RF69/RF69_Receive_Interrupt/RF69_Receive_Interrupt.ino)) 
+This code modifies the RFM69 Radiolib example [Transmit](https://registry.platformio.org/libraries/jgromes/RadioLib/examples/RF69/RF69_Transmit_Interrupt/RF69_Transmit_Interrupt.ino) and [Receive](https://registry.platformio.org/libraries/jgromes/RadioLib/examples/RF69/RF69_Receive_Interrupt/RF69_Receive_Interrupt.ino) 
 to work on the ESP32-S3 board.
 
 This was tested with a ESP32-S3-DevKitC-1
