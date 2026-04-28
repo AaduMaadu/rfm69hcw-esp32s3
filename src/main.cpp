@@ -24,12 +24,12 @@
 #define RECEIVE_MODE
 
 /// RFM69 SPI Configuration
-#define RFM69_SCK     4 
-#define RFM69_MISO    5 
-#define RFM69_MOSI    6 
-#define RFM69_CS      7 
-#define RFM69_IRQ     8 // G0 Pin in Breakourt board 
-#define RFM69_RST     9 
+#define RFM69_SCK     7 
+#define RFM69_MISO    9 
+#define RFM69_MOSI    8 
+#define RFM69_CS      6 
+#define RFM69_IRQ     4 // G0 Pin in Breakourt board 
+#define RFM69_RST     5 
 #define RFM69_GPIO    10 // Not currently used 
 
 SPIClass SPI_RF(HSPI);
@@ -72,9 +72,26 @@ void setup() {
     while (true) { delay(10); }
   }
 
-  // set the function that will be called
-  // when new packet is received
+  // Initialize RFM69 with custom configuration
+  // Emsure that it matches with receving/transmitting radio
   radio.setPacketReceivedAction(setFlag);
+  radio.setFrequency(434.0);
+  static const uint8_t sw[] = {0x12, 0xAD};
+  radio.setSyncWord(sw, sizeof(sw));
+  radio.variablePacketLengthMode(RADIOLIB_RF69_MAX_PACKET_LENGTH);          
+    radio.setBitRate(4.8);            
+    radio.setFrequencyDeviation(5);    
+    radio.setRxBandwidth(125.0);      
+    radio.setOOK(false);                 
+    radio.setOutputPower(20);
+    radio.disableAES();
+    radio.disableAddressFiltering();
+    radio.setCrcFiltering(false);
+    radio.setPreambleLength(32);
+    radio.setDataShaping(RADIOLIB_SHAPING_NONE);
+    radio.setEncoding(RADIOLIB_ENCODING_NRZ);
+
+    Serial.println(F("[RF69] Initialized with configuration"));
 
   // start listening for packets
   Serial.print(F("[RF69] Starting to listen ... "));
