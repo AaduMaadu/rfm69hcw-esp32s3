@@ -76,7 +76,7 @@ void setup() {
   // Emsure that it matches with receving/transmitting radio
   radio.setPacketReceivedAction(setFlag);
   radio.setFrequency(434.0);
-  static const uint8_t sw[] = {0x12, 0xAD};
+  static const uint8_t sw[] = {0x10, 0xAF};
   radio.setSyncWord(sw, sizeof(sw));
   radio.variablePacketLengthMode(RADIOLIB_RF69_MAX_PACKET_LENGTH);          
     radio.setBitRate(4.8);            
@@ -86,9 +86,9 @@ void setup() {
     radio.setOutputPower(20);
     radio.disableAES();
     radio.disableAddressFiltering();
-    radio.setCrcFiltering(false);
+    radio.setCrcFiltering(true);
     radio.setPreambleLength(32);
-    radio.setDataShaping(RADIOLIB_SHAPING_NONE);
+    radio.setDataShaping(RADIOLIB_SHAPING_0_5);
     radio.setEncoding(RADIOLIB_ENCODING_NRZ);
 
     Serial.println(F("[RF69] Initialized with configuration"));
