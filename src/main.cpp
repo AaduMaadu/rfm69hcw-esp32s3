@@ -81,7 +81,7 @@ void setup() {
   radio.variablePacketLengthMode(RADIOLIB_RF69_MAX_PACKET_LENGTH);          
     radio.setBitRate(4.8);            
     radio.setFrequencyDeviation(5);    
-    radio.setRxBandwidth(125.0);      
+    radio.setRxBandwidth(125);      
     radio.setOOK(false);                 
     radio.setOutputPower(20);
     radio.disableAES();
@@ -114,6 +114,118 @@ void setup() {
   // radio.readData();
 }
 
+// Packet type definitions - must match tracker
+#define PKT_TYPE_FC_TELEMETRY   0x01
+#define PKT_TYPE_WIFI_RELAY     0x02
+#define PKT_TYPE_FC_EVENT       0x03
+
+// FSM state names
+const char* fsm_state_name(uint8_t s) {
+    switch(s) {
+        case 0: return "IDLE";
+        case 1: return "ARMED";
+        case 2: return "DISARM";
+        case 3: return "BURNING";
+        case 4: return "RISING";
+        case 5: return "APOGEE";
+        case 6: return "DROGUE_DESCENT";
+        case 7: return "MAIN_DESCENT";
+        case 8: return "LANDED";
+        default: return "UNKNOWN";
+    }
+}
+
+// Event type names
+const char* event_name(uint8_t t) {
+    switch(t) {
+        case 0x01: return "BOOT";
+        case 0x02: return "ARMED";
+        case 0x03: return "DISARMED";
+        case 0x04: return "LAUNCH";
+        case 0x05: return "BURNOUT";
+        case 0x06: return "APOGEE";
+        case 0x07: return "DROGUE_FIRED";
+        case 0x08: return "MAIN_FIRED";
+        case 0x09: return "LANDED";
+        case 0x10: return "SENSOR_FAIL";
+        case 0x11: return "SD_FAIL";
+        case 0xFF: return "GENERIC_ERROR";
+        default:   return "UNKNOWN";
+    }
+}
+
+void decode_packet(uint8_t *buf, int len) {
+    if (len < 1) return;
+    uint8_t pkt_type = buf[0];
+
+    if (pkt_type == PKT_TYPE_FC_TELEMETRY && len >= 25) {
+        // Unpack 24-byte telemetry struct (little-endian)
+        uint32_t time_ms;
+        int16_t  alt, vel_x10, ax, ay, az, pitch, roll, yaw;
+        uint8_t  fsm, flags, pyro;
+
+        memcpy(&time_ms, &buf[1],  4);
+        memcpy(&alt,     &buf[5],  2);
+        memcpy(&vel_x10, &buf[7],  2);
+        memcpy(&ax,      &buf[9],  2);
+        memcpy(&ay,      &buf[11], 2);
+        memcpy(&az,      &buf[13], 2);
+        memcpy(&pitch,   &buf[15], 2);
+        memcpy(&roll,    &buf[17], 2);
+        memcpy(&yaw,     &buf[19], 2);
+        fsm   = buf[21];
+        flags = buf[22];
+        pyro  = buf[23];
+
+        Serial.println(F("--- FC Telemetry ---"));
+        Serial.print(F("  Time:      ")); Serial.print(time_ms); Serial.println(F(" ms"));
+        Serial.print(F("  Altitude:  ")); Serial.print(alt);     Serial.println(F(" ft"));
+        Serial.print(F("  Vert Vel:  ")); Serial.print(vel_x10 / 10.0f, 1); Serial.println(F(" fps"));
+        Serial.print(F("  Accel X:   ")); Serial.print(ax / 1000.0f, 3);    Serial.println(F(" g"));
+        Serial.print(F("  Accel Y:   ")); Serial.print(ay / 1000.0f, 3);    Serial.println(F(" g"));
+        Serial.print(F("  Accel Z:   ")); Serial.print(az / 1000.0f, 3);    Serial.println(F(" g"));
+        Serial.print(F("  Pitch:     ")); Serial.print(pitch);   Serial.println(F(" deg"));
+        Serial.print(F("  Roll:      ")); Serial.print(roll);    Serial.println(F(" deg"));
+        Serial.print(F("  Yaw:       ")); Serial.print(yaw);     Serial.println(F(" deg"));
+        Serial.print(F("  FSM State: ")); Serial.println(fsm_state_name(fsm));
+        Serial.print(F("  Flags:     0x")); Serial.println(flags, HEX);
+        Serial.print(F("    SD Logging:  ")); Serial.println(flags & 0x01 ? "YES" : "NO");
+        Serial.print(F("    Armed:       ")); Serial.println(flags & 0x10 ? "YES" : "NO");
+        Serial.print(F("  Pyro Status: 0x")); Serial.println(pyro, HEX);
+
+    } else if (pkt_type == PKT_TYPE_FC_EVENT && len >= 4) {
+        Serial.println(F("--- FC Event ---"));
+        Serial.print(F("  Event: ")); Serial.println(event_name(buf[2]));
+        Serial.print(F("  Data:  0x")); Serial.println(buf[3], HEX);
+
+    } else if (pkt_type == PKT_TYPE_WIFI_RELAY && len >= 2) {
+        Serial.println(F("--- WiFi Relay ---"));
+        Serial.print(F("  Payload: "));
+        for (int i = 1; i < len; i++) {
+            if (buf[i] < 0x10) Serial.print('0');
+            Serial.print(buf[i], HEX);
+            Serial.print(' ');
+        }
+        Serial.println();
+
+    } else {
+        // Unknown type — try to print as APRS/AX.25 (GPS packet)
+        // Skip binary AX.25 header, find payload after 0x03 0xF0
+        Serial.println(F("--- APRS/GPS ---"));
+        for (int i = 0; i < len - 1; i++) {
+            if (buf[i] == 0x03 && buf[i+1] == 0xF0) {
+                Serial.print(F("  Payload: "));
+                for (int j = i + 2; j < len; j++) {
+                  Serial.print((char)buf[j]);
+                }
+                Serial.println();
+                return;
+            }
+        }
+        Serial.println(F("  (could not parse)"));
+    }
+}
+
 void loop() {
   // check if the flag is set
   if(receivedFlag) {
@@ -122,7 +234,9 @@ void loop() {
 
     // you can read received data as an Arduino String
     String str;
-    int state = radio.readData(str);
+    uint8_t buf[64];
+    int numBytes = radio.getPacketLength();
+    int state = radio.readData(buf, numBytes);
 
     // you can also read received data as byte array
     /*
@@ -136,30 +250,32 @@ void loop() {
       Serial.println(F("[RF69] Received packet!"));
 
       // print data of the packet
-      Serial.print(F("[RF69] Data:\t\t"));
-      Serial.println(str);
+      //Serial.print(F("[RF69] Data:\t\t"));
+      //Serial.println(str);
 
       // print RSSI (Received Signal Strength Indicator)
       // of the last received packet
       Serial.print(F("[RF69] RSSI:\t\t"));
       Serial.print(radio.getRSSI());
       Serial.println(F(" dBm"));
+      Serial.print(F("[RF69] Len:  ")); 
+      Serial.println(numBytes);
+      Serial.print(F("[RF69] Time: \t"));
+      Serial.println(millis());
+      decode_packet(buf, numBytes);
 
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
-      // packet was received, but is malformed
-      Serial.println(F("CRC error!"));
-
+            Serial.println(F("[RF69] CRC error"));
     } else {
-      // some other error occurred
-      Serial.print(F("failed, code "));
-      Serial.println(state);
-
+        Serial.print(F("[RF69] Error code: ")); 
+        Serial.println(state);
     }
 
     // put module back to listen mode
     radio.startReceive();
   }
 }
+
 #endif
 #ifdef TRANSMIT_MODE
 // save transmission state between loops
