@@ -23,14 +23,28 @@
 //#define TRANSMIT_MODE
 #define RECEIVE_MODE
 
-/// RFM69 SPI Configuration
+/// RFM69 HSPI Configuration on ESP32-S3
 #define RFM69_SCK     7 
 #define RFM69_MISO    9 
 #define RFM69_MOSI    8 
 #define RFM69_CS      6 
 #define RFM69_IRQ     4 // G0 Pin in Breakourt board 
 #define RFM69_RST     5 
-#define RFM69_GPIO    10 // Not currently used 
+#define RFM69_GPIO    RADIOLIB_NC // Not currently used 
+
+// HSPI defaults on ESP Wroom 32
+// #define RFM69_SCK     14 
+// #define RFM69_MISO    12 
+// #define RFM69_MOSI    13 
+// #define RFM69_CS      15 
+// #define RFM69_IRQ     27 // G0 Pin in Breakourt board 
+// #define RFM69_RST     26 
+// #define RFM69_GPIO    RADIOLIB_NC // Not currently used 
+
+// Packet type definitions - must match tracker
+#define PKT_TYPE_FC_TELEMETRY   0x01
+#define PKT_TYPE_WIFI_RELAY     0x02
+#define PKT_TYPE_FC_EVENT       0x03
 
 SPIClass SPI_RF(HSPI);
 RF69 radio = new Module(RFM69_CS, RFM69_IRQ, RFM69_RST, RFM69_GPIO, SPI_RF);
@@ -47,77 +61,24 @@ Radio radio = new RadioModule();
 // flag to indicate that a packet was received
 volatile bool receivedFlag = false;
 
-// this function is called when a complete packet
-// is received by the module
-// IMPORTANT: this function MUST be 'void' type
-//            and MUST NOT have any arguments!
-void setFlag(void) {
-  // we sent a packet, set the flag
-  receivedFlag = true;
-}
-
-void setup() {
-  Serial.begin(115200);
-  // SPI config
-  SPI_RF.begin(RFM69_SCK, RFM69_MISO, RFM69_MOSI, RFM69_CS);
-
-  // initialize RF69 with default settings
-  Serial.print(F("[RF69] Initializing ... "));
-  int state = radio.begin();
-  if (state == RADIOLIB_ERR_NONE) {
-    Serial.println(F("success!"));
-  } else {
-    Serial.print(F("failed, code "));
-    Serial.println(state);
-    while (true) { delay(10); }
-  }
-
-  // Initialize RFM69 with custom configuration
-  // Emsure that it matches with receving/transmitting radio
-  radio.setPacketReceivedAction(setFlag);
-  radio.setFrequency(434.0);
-  static const uint8_t sw[] = {0x10, 0xAF};
-  radio.setSyncWord(sw, sizeof(sw));
-  radio.variablePacketLengthMode(RADIOLIB_RF69_MAX_PACKET_LENGTH);          
-    radio.setBitRate(4.8);            
-    radio.setFrequencyDeviation(5);    
-    radio.setRxBandwidth(125);      
-    radio.setOOK(false);                 
-    radio.setOutputPower(20);
-    radio.disableAES();
-    radio.disableAddressFiltering();
-    radio.setCrcFiltering(true);
-    radio.setPreambleLength(32);
-    radio.setDataShaping(RADIOLIB_SHAPING_0_5);
-    radio.setEncoding(RADIOLIB_ENCODING_NRZ);
-
-    Serial.println(F("[RF69] Initialized with configuration"));
-
-  // start listening for packets
-  Serial.print(F("[RF69] Starting to listen ... "));
-  state = radio.startReceive();
-  if (state == RADIOLIB_ERR_NONE) {
-    Serial.println(F("success!"));
-  } else {
-    Serial.print(F("failed, code "));
-    Serial.println(state);
-    while (true) { delay(10); }
-  }
-
-  // if needed, 'listen' mode can be disabled by calling
-  // any of the following methods:
-  //
-  // radio.standby()
-  // radio.sleep()
-  // radio.transmit();
-  // radio.receive();
-  // radio.readData();
-}
-
-// Packet type definitions - must match tracker
-#define PKT_TYPE_FC_TELEMETRY   0x01
-#define PKT_TYPE_WIFI_RELAY     0x02
-#define PKT_TYPE_FC_EVENT       0x03
+struct __attribute__((__packed__)) TelemetryPacket {
+    uint8_t start_marker1 = 0xAA; // Sync byte 1
+    uint8_t start_marker2 = 0xBB; // Sync byte 2
+    uint16_t packet_size = 29;    // Payload size (excluding headers)
+    
+    uint32_t time_ms;
+    int16_t alt;
+    int16_t vel_x10;
+    int16_t ax;
+    int16_t ay;
+    int16_t az;
+    int16_t pitch;
+    int16_t roll;
+    int16_t yaw;
+    uint8_t fsm;
+    uint8_t flags;
+    uint8_t pyro;
+};
 
 // FSM state names
 const char* fsm_state_name(uint8_t s) {
@@ -154,44 +115,118 @@ const char* event_name(uint8_t t) {
     }
 }
 
-void decode_packet(uint8_t *buf, int len) {
+// this function is called when a complete packet
+// is received by the module
+// IMPORTANT: this function MUST be 'void' type
+//            and MUST NOT have any arguments!
+void setFlag(void) {
+  // we sent a packet, set the flag
+  receivedFlag = true;
+}
+
+void setup() {
+  Serial.begin(115200);
+  // SPI config
+  SPI_RF.begin(RFM69_SCK, RFM69_MISO, RFM69_MOSI, RFM69_CS);
+
+  // SPI Sanity Check
+  pinMode(RFM69_CS, OUTPUT);
+  digitalWrite(RFM69_CS, LOW);
+  SPI_RF.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+  SPI_RF.transfer(0x10);          // RegVersion address (read)
+  uint8_t ver = SPI_RF.transfer(0x00);
+  SPI_RF.endTransaction();
+  digitalWrite(RFM69_CS, HIGH);
+  Serial.printf("RFM69 version reg: 0x%02X (expect 0x24)\n", ver);
+
+  // initialize RF69 with default settings
+  Serial.print(F("[RF69] Initializing ... "));
+  int state = radio.begin();
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.println(F("success!"));
+  } else {
+    Serial.print(F("failed, code "));
+    Serial.println(state);
+    while (true) { delay(10); }
+  }
+
+  // Initialize RFM69 with custom configuration
+  // Emsure that it matches with receving/transmitting radio
+  radio.setPacketReceivedAction(setFlag);
+  radio.setFrequency(441.610);
+  static const uint8_t sw[] = {0x10, 0xAF};
+  radio.setSyncWord(sw, sizeof(sw));
+  radio.variablePacketLengthMode(RADIOLIB_RF69_MAX_PACKET_LENGTH);          
+    radio.setBitRate(4.8);            
+    radio.setFrequencyDeviation(5);    
+    radio.setRxBandwidth(125.0);      
+    radio.setOOK(false);                 
+    radio.setOutputPower(20, true);
+    radio.disableAES();
+    radio.disableAddressFiltering();
+    radio.setCrcFiltering(true);
+    radio.setPreambleLength(32);
+    radio.setDataShaping(RADIOLIB_SHAPING_0_5);
+    radio.setEncoding(RADIOLIB_ENCODING_NRZ);
+
+    Serial.println(F("[RF69] Initialized with configuration"));
+
+  // start listening for packets
+  Serial.print(F("[RF69] Starting to listen ... "));
+  state = radio.startReceive();
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.println(F("success!"));
+  } else {
+    Serial.print(F("failed, code "));
+    Serial.println(state);
+    while (true) { delay(10); }
+  }
+
+  // if needed, 'listen' mode can be disabled by calling
+  // any of the following methods:
+  //
+  // radio.standby()
+  // radio.sleep()
+  // radio.transmit();
+  // radio.receive();
+  // radio.readData();
+}
+
+void decode_packet(uint8_t *buf, int len, TelemetryPacket *packet) {
     if (len < 1) return;
     uint8_t pkt_type = buf[0];
 
     if (pkt_type == PKT_TYPE_FC_TELEMETRY && len >= 25) {
         // Unpack 24-byte telemetry struct (little-endian)
-        uint32_t time_ms;
-        int16_t  alt, vel_x10, ax, ay, az, pitch, roll, yaw;
-        uint8_t  fsm, flags, pyro;
 
-        memcpy(&time_ms, &buf[1],  4);
-        memcpy(&alt,     &buf[5],  2);
-        memcpy(&vel_x10, &buf[7],  2);
-        memcpy(&ax,      &buf[9],  2);
-        memcpy(&ay,      &buf[11], 2);
-        memcpy(&az,      &buf[13], 2);
-        memcpy(&pitch,   &buf[15], 2);
-        memcpy(&roll,    &buf[17], 2);
-        memcpy(&yaw,     &buf[19], 2);
-        fsm   = buf[21];
-        flags = buf[22];
-        pyro  = buf[23];
+        memcpy(&packet->time_ms, &buf[1],  4);
+        memcpy(&packet->alt,     &buf[5],  2);
+        memcpy(&packet->vel_x10, &buf[7],  2);
+        memcpy(&packet->ax,      &buf[9],  2);
+        memcpy(&packet->ay,      &buf[11], 2);
+        memcpy(&packet->az,      &buf[13], 2);
+        memcpy(&packet->pitch,   &buf[15], 2);
+        memcpy(&packet->roll,    &buf[17], 2);
+        memcpy(&packet->yaw,     &buf[19], 2);
+        packet->fsm   = buf[21];
+        packet->flags = buf[22];
+        packet->pyro  = buf[23];
 
         Serial.println(F("--- FC Telemetry ---"));
-        Serial.print(F("  Time:      ")); Serial.print(time_ms); Serial.println(F(" ms"));
-        Serial.print(F("  Altitude:  ")); Serial.print(alt);     Serial.println(F(" ft"));
-        Serial.print(F("  Vert Vel:  ")); Serial.print(vel_x10 / 10.0f, 1); Serial.println(F(" fps"));
-        Serial.print(F("  Accel X:   ")); Serial.print(ax / 1000.0f, 3);    Serial.println(F(" g"));
-        Serial.print(F("  Accel Y:   ")); Serial.print(ay / 1000.0f, 3);    Serial.println(F(" g"));
-        Serial.print(F("  Accel Z:   ")); Serial.print(az / 1000.0f, 3);    Serial.println(F(" g"));
-        Serial.print(F("  Pitch:     ")); Serial.print(pitch);   Serial.println(F(" deg"));
-        Serial.print(F("  Roll:      ")); Serial.print(roll);    Serial.println(F(" deg"));
-        Serial.print(F("  Yaw:       ")); Serial.print(yaw);     Serial.println(F(" deg"));
-        Serial.print(F("  FSM State: ")); Serial.println(fsm_state_name(fsm));
-        Serial.print(F("  Flags:     0x")); Serial.println(flags, HEX);
-        Serial.print(F("    SD Logging:  ")); Serial.println(flags & 0x01 ? "YES" : "NO");
-        Serial.print(F("    Armed:       ")); Serial.println(flags & 0x10 ? "YES" : "NO");
-        Serial.print(F("  Pyro Status: 0x")); Serial.println(pyro, HEX);
+        Serial.print(F("  Time:      ")); Serial.print(packet->time_ms); Serial.println(F(" ms"));
+        Serial.print(F("  Altitude:  ")); Serial.print(packet->alt);     Serial.println(F(" ft"));
+        Serial.print(F("  Vert Vel:  ")); Serial.print(packet->vel_x10 / 10.0f, 1); Serial.println(F(" fps"));
+        Serial.print(F("  Accel X:   ")); Serial.print(packet->ax / 1000.0f, 3);    Serial.println(F(" g"));
+        Serial.print(F("  Accel Y:   ")); Serial.print(packet->ay / 1000.0f, 3);    Serial.println(F(" g"));
+        Serial.print(F("  Accel Z:   ")); Serial.print(packet->az / 1000.0f, 3);    Serial.println(F(" g"));
+        Serial.print(F("  Pitch:     ")); Serial.print(packet->pitch);   Serial.println(F(" deg"));
+        Serial.print(F("  Roll:      ")); Serial.print(packet->roll);    Serial.println(F(" deg"));
+        Serial.print(F("  Yaw:       ")); Serial.print(packet->yaw);     Serial.println(F(" deg"));
+        Serial.print(F("  FSM State: ")); Serial.println(fsm_state_name(packet->fsm));
+        Serial.print(F("  Flags:     0x")); Serial.println(packet->flags, HEX);
+        Serial.print(F("    SD Logging:  ")); Serial.println(packet->flags & 0x01 ? "YES" : "NO");
+        Serial.print(F("    Armed:       ")); Serial.println(packet->flags & 0x10 ? "YES" : "NO");
+        Serial.print(F("  Pyro Status: 0x")); Serial.println(packet->pyro, HEX);
 
     } else if (pkt_type == PKT_TYPE_FC_EVENT && len >= 4) {
         Serial.println(F("--- FC Event ---"));
@@ -237,6 +272,7 @@ void loop() {
     uint8_t buf[64];
     int numBytes = radio.getPacketLength();
     int state = radio.readData(buf, numBytes);
+    TelemetryPacket packet;
 
     // you can also read received data as byte array
     /*
@@ -262,7 +298,10 @@ void loop() {
       Serial.println(numBytes);
       Serial.print(F("[RF69] Time: \t"));
       Serial.println(millis());
-      decode_packet(buf, numBytes);
+      decode_packet(buf, numBytes, &packet);
+
+      // Write the entire struct to UART as raw binary instantly
+      Serial.write((uint8_t*)&packet, sizeof(TelemetryPacket));
 
     } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
             Serial.println(F("[RF69] CRC error"));

@@ -3,5 +3,9 @@
         "*.ejs": "html",
         "new": "cpp"
     },
-    "idf.portWin": "COM19"
+    "idf.portWin": "COM8",
+    "idf.currentSetup": "C:\\Users\\aades\\esp\\v5.5.1\\esp-idf",
+    "idf.openOcdConfigs": [
+        "board/esp32s3-builtin.cfg"
+    ]
 }
