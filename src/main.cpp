@@ -62,6 +62,7 @@ static float g_gps_lng = 0;
 static float g_gps_batt = 0;
 
 CRGB leds[NUM_LEDS];
+void led_blink(CRGB color);
 
 struct __attribute__((__packed__)) TelemetryPacket {
     uint8_t start_marker1 = 0xAA; // Sync byte 1
