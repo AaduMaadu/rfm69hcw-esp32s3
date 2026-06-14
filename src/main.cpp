@@ -14,6 +14,7 @@
 
 // include the library
 #include <RadioLib.h>
+#include <FastLED.h>
 
 #if defined(ESP8266) || defined(ESP32)
   ICACHE_RAM_ATTR
@@ -32,14 +33,9 @@
 #define RFM69_RST     5 
 #define RFM69_GPIO    RADIOLIB_NC // Not currently used 
 
-// HSPI defaults on ESP Wroom 32
-// #define RFM69_SCK     14 
-// #define RFM69_MISO    12 
-// #define RFM69_MOSI    13 
-// #define RFM69_CS      15 
-// #define RFM69_IRQ     27 // G0 Pin in Breakourt board 
-// #define RFM69_RST     26 
-// #define RFM69_GPIO    RADIOLIB_NC // Not currently used 
+#define LED_PIN     38
+#define NUM_LEDS    1
+#define BLINK_MS    150
 
 // Packet type definitions - must match tracker
 #define PKT_TYPE_FC_TELEMETRY   0x01
@@ -63,7 +59,9 @@ volatile bool receivedFlag = false;
 
 static float g_gps_lat = 0;
 static float g_gps_lng = 0;
-static uint16_t g_gps_batt = 0;
+static float g_gps_batt = 0;
+
+CRGB leds[NUM_LEDS];
 
 struct __attribute__((__packed__)) TelemetryPacket {
     uint8_t start_marker1 = 0xAA; // Sync byte 1
@@ -86,7 +84,7 @@ struct __attribute__((__packed__)) TelemetryPacket {
     uint8_t pyro;
     float gps_lat = g_gps_lat;
     float gps_lng = g_gps_lng;
-    uint16_t gps_batt_mv = (uint16_t) (g_gps_batt * 1000);
+    uint16_t gps_batt_mv = (uint16_t)(g_gps_batt * 1000);
 };
 
 // --------------------------------------------------
@@ -186,6 +184,9 @@ void setup() {
     while (true) { delay(10); }
   }
 
+  FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUM_LEDS);
+  FastLED.setBrightness(150); // 0-255, keep low to avoid blinding
+
   // Initialize RFM69 with custom configuration
   // Emsure that it matches with receving/transmitting radio
   radio.setPacketReceivedAction(setFlag);
@@ -207,16 +208,16 @@ void setup() {
 
     Serial.println(F("[RF69] Initialized with configuration"));
 
-  // start listening for packets
-  Serial.print(F("[RF69] Starting to listen ... "));
-  state = radio.startReceive();
-  if (state == RADIOLIB_ERR_NONE) {
-    Serial.println(F("success!"));
-  } else {
-    Serial.print(F("failed, code "));
-    Serial.println(state);
-    while (true) { delay(10); }
-  }
+    // start listening for packets
+    Serial.print(F("[RF69] Starting to listen ... "));
+    state = radio.startReceive();
+    if (state == RADIOLIB_ERR_NONE) {
+      Serial.println(F("success!"));
+    } else {
+      Serial.print(F("failed, code "));
+      Serial.println(state);
+      while (true) { delay(10); }
+    }
 
   // if needed, 'listen' mode can be disabled by calling
   // any of the following methods:
@@ -228,51 +229,63 @@ void setup() {
   // radio.readData();
 }
 
+void led_blink(CRGB color) {
+    leds[0] = color;
+    FastLED.show();
+    delay(BLINK_MS);
+    leds[0] = CRGB::Black;
+    FastLED.show();
+}
+
 void decode_packet(uint8_t *buf, int len, TelemetryPacket *packet) {
     if (len < 1) return;
     uint8_t pkt_type = buf[0];
 
     if (pkt_type == PKT_TYPE_FC_TELEMETRY && len >= 25) {
-        // Unpack 24-byte telemetry struct (little-endian)
+      led_blink(CRGB::Green);
 
-        memcpy(&packet->time_ms, &buf[1],  4);
-        memcpy(&packet->alt,     &buf[5],  2);
-        memcpy(&packet->vel_x10, &buf[7],  2);
-        memcpy(&packet->ax,      &buf[9],  2);
-        memcpy(&packet->ay,      &buf[11], 2);
-        memcpy(&packet->az,      &buf[13], 2);
-        memcpy(&packet->pitch,   &buf[15], 2);
-        memcpy(&packet->roll,    &buf[17], 2);
-        memcpy(&packet->yaw,     &buf[19], 2);
-        packet->fsm   = buf[21];
-        packet->flags = buf[22];
-        packet->pyro  = buf[23];
+      // Unpack 24-byte telemetry struct (little-endian)
+      memcpy(&packet->time_ms, &buf[1],  4);
+      memcpy(&packet->alt,     &buf[5],  2);
+      memcpy(&packet->vel_x10, &buf[7],  2);
+      memcpy(&packet->ax,      &buf[9],  2);
+      memcpy(&packet->ay,      &buf[11], 2);
+      memcpy(&packet->az,      &buf[13], 2);
+      memcpy(&packet->pitch,   &buf[15], 2);
+      memcpy(&packet->roll,    &buf[17], 2);
+      memcpy(&packet->yaw,     &buf[19], 2);
+      packet->fsm   = buf[21];
+      packet->flags = buf[22];
+      packet->pyro  = buf[23];
 
-        Serial.println(F("--- FC Telemetry ---"));
-        Serial.print(F("  Time:      ")); Serial.print(packet->time_ms); Serial.println(F(" ms"));
-        Serial.print(F("  Altitude:  ")); Serial.print(packet->alt);     Serial.println(F(" ft"));
-        Serial.print(F("  Vert Vel:  ")); Serial.print(packet->vel_x10 / 10.0f, 1); Serial.println(F(" fps"));
-        Serial.print(F("  Accel X:   ")); Serial.print(packet->ax / 1000.0f, 3);    Serial.println(F(" g"));
-        Serial.print(F("  Accel Y:   ")); Serial.print(packet->ay / 1000.0f, 3);    Serial.println(F(" g"));
-        Serial.print(F("  Accel Z:   ")); Serial.print(packet->az / 1000.0f, 3);    Serial.println(F(" g"));
-        Serial.print(F("  Pitch:     ")); Serial.print(packet->pitch);   Serial.println(F(" deg"));
-        Serial.print(F("  Roll:      ")); Serial.print(packet->roll);    Serial.println(F(" deg"));
-        Serial.print(F("  Yaw:       ")); Serial.print(packet->yaw);     Serial.println(F(" deg"));
-        Serial.print(F("  FSM State: ")); Serial.println(fsm_state_name(packet->fsm));
-        Serial.print(F("  Flags:     0x")); Serial.println(packet->flags, HEX);
-        Serial.print(F("    SD Logging:  ")); Serial.println(packet->flags & 0x01 ? "YES" : "NO");
-        Serial.print(F("    Armed:       ")); Serial.println(packet->flags & 0x10 ? "YES" : "NO");
-        Serial.print(F("  Pyro Status: 0x")); Serial.println(packet->pyro, HEX);
+      Serial.println(F("--- FC Telemetry ---"));
+      Serial.print(F("  Time:      ")); Serial.print(packet->time_ms); Serial.println(F(" ms"));
+      Serial.print(F("  Altitude:  ")); Serial.print(packet->alt);     Serial.println(F(" ft"));
+      Serial.print(F("  Vert Vel:  ")); Serial.print(packet->vel_x10 / 10.0f, 1); Serial.println(F(" fps"));
+      Serial.print(F("  Accel X:   ")); Serial.print(packet->ax / 1000.0f, 3);    Serial.println(F(" g"));
+      Serial.print(F("  Accel Y:   ")); Serial.print(packet->ay / 1000.0f, 3);    Serial.println(F(" g"));
+      Serial.print(F("  Accel Z:   ")); Serial.print(packet->az / 1000.0f, 3);    Serial.println(F(" g"));
+      Serial.print(F("  Pitch:     ")); Serial.print(packet->pitch);   Serial.println(F(" deg"));
+      Serial.print(F("  Roll:      ")); Serial.print(packet->roll);    Serial.println(F(" deg"));
+      Serial.print(F("  Yaw:       ")); Serial.print(packet->yaw);     Serial.println(F(" deg"));
+      Serial.print(F("  FSM State: ")); Serial.println(fsm_state_name(packet->fsm));
+      Serial.print(F("  Flags:     0x")); Serial.println(packet->flags, HEX);
+      Serial.print(F("    SD Logging:  ")); Serial.println(packet->flags & 0x01 ? "YES" : "NO");
+      Serial.print(F("    Armed:       ")); Serial.println(packet->flags & 0x10 ? "YES" : "NO");
+      Serial.print(F("  Pyro Status: 0x")); Serial.println(packet->pyro, HEX);
 
     } else if (pkt_type == PKT_TYPE_FC_EVENT && len >= 4) {
+        led_blink(CRGB::Green);
         Serial.println(F("--- FC Event ---"));
         Serial.print(F("  Event: ")); Serial.println(event_name(buf[2]));
         Serial.print(F("  Data:  0x")); Serial.println(buf[3], HEX);
 
     } else if (pkt_type == PKT_TYPE_WIFI_RELAY && len >= 2) {
-    uint8_t wifi_type = buf[1];
+      led_blink(CRGB::Blue);
 
-    if (wifi_type == 0xA1 && len >= (1 + (int)sizeof(mpu_wire_msg_t))) {
+      uint8_t wifi_type = buf[1];
+
+      if (wifi_type == 0xA1 && len >= (1 + (int)sizeof(mpu_wire_msg_t))) {
         // MPU6050 combined packet
         mpu_wire_msg_t mpu;
         memcpy(&mpu, &buf[1], sizeof(mpu_wire_msg_t));
@@ -319,6 +332,7 @@ void decode_packet(uint8_t *buf, int len, TelemetryPacket *packet) {
     }
 
   } else {
+      led_blink(CRGB::Red);
       // Try to print as APRS/AX.25 (GPS packet) else unknown type
       // Skip binary AX.25 header, find payload after 0x03 0xF0
       Serial.println(F("--- APRS/GPS ---"));
@@ -339,7 +353,7 @@ void decode_packet(uint8_t *buf, int len, TelemetryPacket *packet) {
 
               // sscanf expects the exact format your tracker sends
               int parsed = sscanf(payload, "=%fN/%fWTeam%dV%f",
-                                  &g_gps_lat, &g_gps_lat, &team, &g_gps_batt);
+                                  &g_gps_lat, &g_gps_lng, &team, &g_gps_batt);
 
               if (parsed >= 2) {
                   packet->gps_lat = g_gps_lat;
@@ -348,8 +362,8 @@ void decode_packet(uint8_t *buf, int len, TelemetryPacket *packet) {
                   Serial.print(F("  Lng: ")); Serial.println(packet->gps_lng, 5);
               }
               if (parsed >= 4) {
-                  packet->gps_batt_mv = (uint16_t)(g_gps_batt * 1000);
-                  Serial.print(F("  Batt: ")); Serial.print(g_gps_batt, 2); Serial.println(F(" V"));
+                  packet->gps_batt_mv = (uint16_t)(g_gps_batt * 1000); // V to mV
+                  Serial.print(F("  Batt: ")); Serial.print(packet->gps_batt_mv / 1000.0, 2); Serial.println(F(" V"));
               }
               return;
           }
