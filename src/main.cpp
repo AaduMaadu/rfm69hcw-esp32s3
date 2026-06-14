@@ -163,7 +163,7 @@ void setup() {
   // SPI config
   SPI_RF.begin(RFM69_SCK, RFM69_MISO, RFM69_MOSI, RFM69_CS);
 
-  // SPI Sanity Check
+  // RFM69 Device SPI Sanity Check 
   pinMode(RFM69_CS, OUTPUT);
   digitalWrite(RFM69_CS, LOW);
   SPI_RF.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
@@ -184,8 +184,12 @@ void setup() {
     while (true) { delay(10); }
   }
 
+  // Init ESP32 RGB LED
   FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUM_LEDS);
   FastLED.setBrightness(150); // 0-255, keep low to avoid blinding
+  led_blink(CRGB::Red);
+  led_blink(CRGB::Green);
+  led_blink(CRGB::Blue);
 
   // Initialize RFM69 with custom configuration
   // Emsure that it matches with receving/transmitting radio
@@ -332,15 +336,16 @@ void decode_packet(uint8_t *buf, int len, TelemetryPacket *packet) {
     }
 
   } else {
-      led_blink(CRGB::Red);
       // Try to print as APRS/AX.25 (GPS packet) else unknown type
       // Skip binary AX.25 header, find payload after 0x03 0xF0
       Serial.println(F("--- APRS/GPS ---"));
       for (int i = 0; i < len - 1; i++) {
           if (buf[i] == 0x03 && buf[i+1] == 0xF0) {
-              // Null-terminate the payload
-              char payload[64] = {0};
+              led_blink(CRGB::Red);
+
+              char payload[64] = {0}; // Null-terminate the payload
               int payload_len = len - (i + 2);
+
               if (payload_len > 63) payload_len = 63;
               memcpy(payload, &buf[i+2], payload_len);
 
@@ -348,7 +353,6 @@ void decode_packet(uint8_t *buf, int len, TelemetryPacket *packet) {
               Serial.println(payload);
 
               // Parse: Eg: =32.99370N/96.75230WTeam308V3.85
-              //float lat = 0, lng = 0, batt = 0;
               int team = 0;
 
               // sscanf expects the exact format your tracker sends
