@@ -61,12 +61,17 @@ Radio radio = new RadioModule();
 // flag to indicate that a packet was received
 volatile bool receivedFlag = false;
 
+static float g_gps_lat = 0;
+static float g_gps_lng = 0;
+static uint16_t g_gps_batt = 0;
+
 struct __attribute__((__packed__)) TelemetryPacket {
     uint8_t start_marker1 = 0xAA; // Sync byte 1
     uint8_t start_marker2 = 0xBB; // Sync byte 2
     uint16_t packet_size = 29;    // Payload size (excluding headers)
     
     uint32_t time_ms;
+
     int16_t alt;
     int16_t vel_x10;
     int16_t ax;
@@ -75,10 +80,41 @@ struct __attribute__((__packed__)) TelemetryPacket {
     int16_t pitch;
     int16_t roll;
     int16_t yaw;
+
     uint8_t fsm;
     uint8_t flags;
     uint8_t pyro;
+    float gps_lat = g_gps_lat;
+    float gps_lng = g_gps_lng;
+    uint16_t gps_batt_mv = (uint16_t) (g_gps_batt * 1000);
 };
+
+// --------------------------------------------------
+// Struct from payload for combined MPU6050 sample
+// --------------------------------------------------
+typedef struct __attribute__((packed)) {
+    uint8_t msg_type;
+    uint16_t seq;
+    int16_t ax_mg;
+    int16_t ay_mg;
+    int16_t az_mg;
+    int16_t gx_cds;
+    int16_t gy_cds;
+    int16_t gz_cds;
+    int16_t temp_centiC;
+    uint8_t valid_mask;
+} mpu_wire_msg_t;
+
+// CANAS struct for decoding payload packet
+typedef struct __attribute__((packed)) {
+    uint16_t msg_id;
+    uint8_t node_id;
+    uint8_t dtc;
+    uint8_t svc_code;
+    uint8_t msg_code;
+    uint8_t data[4];
+    uint8_t data_len;
+} canas_wire_msg_t;
 
 // FSM state names
 const char* fsm_state_name(uint8_t s) {
@@ -234,31 +270,92 @@ void decode_packet(uint8_t *buf, int len, TelemetryPacket *packet) {
         Serial.print(F("  Data:  0x")); Serial.println(buf[3], HEX);
 
     } else if (pkt_type == PKT_TYPE_WIFI_RELAY && len >= 2) {
-        Serial.println(F("--- WiFi Relay ---"));
-        Serial.print(F("  Payload: "));
+    uint8_t wifi_type = buf[1];
+
+    if (wifi_type == 0xA1 && len >= (1 + (int)sizeof(mpu_wire_msg_t))) {
+        // MPU6050 combined packet
+        mpu_wire_msg_t mpu;
+        memcpy(&mpu, &buf[1], sizeof(mpu_wire_msg_t));
+
+        Serial.println(F("--- Payload MPU6050 ---"));
+        Serial.print(F("  Seq:    ")); Serial.println(mpu.seq);
+        Serial.print(F("  Accel X: ")); Serial.print(mpu.ax_mg / 1000.0f, 3); Serial.println(F(" g"));
+        Serial.print(F("  Accel Y: ")); Serial.print(mpu.ay_mg / 1000.0f, 3); Serial.println(F(" g"));
+        Serial.print(F("  Accel Z: ")); Serial.print(mpu.az_mg / 1000.0f, 3); Serial.println(F(" g"));
+        Serial.print(F("  Gyro X:  ")); Serial.print(mpu.gx_cds / 100.0f, 2); Serial.println(F(" deg/s"));
+        Serial.print(F("  Gyro Y:  ")); Serial.print(mpu.gy_cds / 100.0f, 2); Serial.println(F(" deg/s"));
+        Serial.print(F("  Gyro Z:  ")); Serial.print(mpu.gz_cds / 100.0f, 2); Serial.println(F(" deg/s"));
+        Serial.print(F("  Temp:    ")); Serial.print(mpu.temp_centiC / 100.0f, 2); Serial.println(F(" C"));
+        Serial.print(F("  Valid:   0x")); Serial.println(mpu.valid_mask, HEX);
+
+    } else if (len >= (1 + (int)sizeof(canas_wire_msg_t))) {
+        // CANaerospace generic frame
+        canas_wire_msg_t canas;
+        memcpy(&canas, &buf[1], sizeof(canas_wire_msg_t));
+
+        Serial.println(F("--- Payload CANaerospace ---"));
+        Serial.print(F("  Msg ID:   0x")); Serial.println(canas.msg_id, HEX);
+        Serial.print(F("  Node ID:  ")); Serial.println(canas.node_id);
+        Serial.print(F("  DTC:      ")); Serial.println(canas.dtc);
+        Serial.print(F("  Svc Code: ")); Serial.println(canas.svc_code);
+        Serial.print(F("  Msg Code: ")); Serial.println(canas.msg_code);
+        Serial.print(F("  Data len: ")); Serial.println(canas.data_len);
+        Serial.print(F("  Data:     "));
+        for (int i = 0; i < canas.data_len && i < 4; i++) {
+            if (canas.data[i] < 0x10) Serial.print('0');
+            Serial.print(canas.data[i], HEX);
+            Serial.print(' ');
+        }
+        Serial.println();
+    } else {
+        Serial.println(F("--- WiFi Relay (unknown) ---"));
+        Serial.print(F("  Raw: "));
         for (int i = 1; i < len; i++) {
             if (buf[i] < 0x10) Serial.print('0');
             Serial.print(buf[i], HEX);
             Serial.print(' ');
         }
         Serial.println();
-
-    } else {
-        // Unknown type — try to print as APRS/AX.25 (GPS packet)
-        // Skip binary AX.25 header, find payload after 0x03 0xF0
-        Serial.println(F("--- APRS/GPS ---"));
-        for (int i = 0; i < len - 1; i++) {
-            if (buf[i] == 0x03 && buf[i+1] == 0xF0) {
-                Serial.print(F("  Payload: "));
-                for (int j = i + 2; j < len; j++) {
-                  Serial.print((char)buf[j]);
-                }
-                Serial.println();
-                return;
-            }
-        }
-        Serial.println(F("  (could not parse)"));
     }
+
+  } else {
+      // Try to print as APRS/AX.25 (GPS packet) else unknown type
+      // Skip binary AX.25 header, find payload after 0x03 0xF0
+      Serial.println(F("--- APRS/GPS ---"));
+      for (int i = 0; i < len - 1; i++) {
+          if (buf[i] == 0x03 && buf[i+1] == 0xF0) {
+              // Null-terminate the payload
+              char payload[64] = {0};
+              int payload_len = len - (i + 2);
+              if (payload_len > 63) payload_len = 63;
+              memcpy(payload, &buf[i+2], payload_len);
+
+              Serial.print(F("  Payload: "));
+              Serial.println(payload);
+
+              // Parse: Eg: =32.99370N/96.75230WTeam308V3.85
+              //float lat = 0, lng = 0, batt = 0;
+              int team = 0;
+
+              // sscanf expects the exact format your tracker sends
+              int parsed = sscanf(payload, "=%fN/%fWTeam%dV%f",
+                                  &g_gps_lat, &g_gps_lat, &team, &g_gps_batt);
+
+              if (parsed >= 2) {
+                  packet->gps_lat = g_gps_lat;
+                  packet->gps_lng = g_gps_lng;
+                  Serial.print(F("  Lat: ")); Serial.println(packet->gps_lat, 5);
+                  Serial.print(F("  Lng: ")); Serial.println(packet->gps_lng, 5);
+              }
+              if (parsed >= 4) {
+                  packet->gps_batt_mv = (uint16_t)(g_gps_batt * 1000);
+                  Serial.print(F("  Batt: ")); Serial.print(g_gps_batt, 2); Serial.println(F(" V"));
+              }
+              return;
+          }
+      }
+      Serial.println(F("  (could not parse)"));
+  }
 }
 
 void loop() {
